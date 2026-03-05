@@ -639,20 +639,35 @@ async fn enable_apis(
         return (Vec::new(), skipped, Vec::new());
     }
 
-    // Enable each API individually so one failure doesn't block the rest
+    // Enable each API individually and in parallel so one failure doesn't
+    // block the rest.  Uses tokio::process to avoid blocking the executor.
+    use futures_util::stream::StreamExt;
+
+    let results = futures_util::stream::iter(to_enable)
+        .map(|api_id| {
+            let project_id = project_id.to_string();
+            async move {
+                let result = tokio::process::Command::new("gcloud")
+                    .env("CLOUDSDK_CORE_DISABLE_PROMPTS", "1")
+                    .args(["services", "enable", &api_id, "--project", &project_id])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .output()
+                    .await;
+                (api_id, result)
+            }
+        })
+        .buffer_unordered(5)
+        .collect::<Vec<_>>()
+        .await;
+
     let mut enabled = Vec::new();
     let mut failed = Vec::new();
 
-    for api_id in &to_enable {
-        let result = gcloud_cmd()
-            .args(["services", "enable", api_id, "--project", project_id])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output();
-
+    for (api_id, result) in results {
         match result {
             Ok(output) if output.status.success() => {
-                enabled.push(api_id.clone());
+                enabled.push(api_id);
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -664,10 +679,10 @@ async fn enable_apis(
                 } else {
                     stderr
                 };
-                failed.push((api_id.clone(), msg));
+                failed.push((api_id, msg));
             }
             Err(e) => {
-                failed.push((api_id.clone(), format!("Failed to run gcloud: {e}")));
+                failed.push((api_id, format!("Failed to run gcloud: {e}")));
             }
         }
     }
@@ -1169,12 +1184,12 @@ async fn stage_enable_apis(ctx: &mut SetupContext) -> Result<SetupStage, GwsErro
         enable_apis(&ctx.project_id, &ctx.api_ids).await;
     ctx.enabled = enabled_apis;
     ctx.skipped = skipped_apis;
-    ctx.failed = failed_apis.clone();
+    ctx.failed = failed_apis;
 
     // Show failure details so the user knows what went wrong
-    if !failed_apis.is_empty() {
+    if !ctx.failed.is_empty() {
         eprintln!();
-        for (api, err) in &failed_apis {
+        for (api, err) in &ctx.failed {
             eprintln!("  ⚠  {} — {}", api, err);
         }
         eprintln!();

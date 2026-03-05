@@ -1906,11 +1906,9 @@ mod tests {
     // ── enable_apis unit tests ──────────────────────────────────
 
     #[tokio::test]
-    async fn test_enable_apis_all_already_enabled() {
-        // When all requested APIs are already enabled, enable_apis should
-        // return them all as skipped with nothing to enable or fail.
-        // We use a non-existent project so gcloud won't find anything,
-        // but override the "already enabled" check by passing an empty list.
+    async fn test_enable_apis_with_no_apis_to_enable() {
+        // When no APIs are requested for enablement, `enable_apis` should
+        // return empty lists for enabled, skipped, and failed.
         let (enabled, skipped, failed) = enable_apis("__nonexistent__", &[]).await;
         assert!(enabled.is_empty());
         assert!(skipped.is_empty());
